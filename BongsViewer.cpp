@@ -13,6 +13,7 @@
 #include <commctrl.h>
 #include <gdiplus.h>
 #include <shlwapi.h>
+#include <shlobj.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -154,6 +155,10 @@ struct AppState {
     bool trackbarUpdating = false;
 
     float zoomFactor = 1.0f;  // 1.0 = fit-to-window, >1 = zoomed in, <1 = zoomed out
+
+    std::wstring lastFile;
+    std::wstring lastFolder;
+    int          lastPage = 0;
 };
 
 static AppState g_app;
@@ -164,13 +169,108 @@ static AppState g_app;
 LRESULT CALLBACK WndProc   (HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK CanvasProc(HWND, UINT, WPARAM, LPARAM);
 void OpenZipDialog ();
-void OpenZipFile   (const std::wstring& path);
+void OpenZipFile   (const std::wstring& path, int startPage = 0, bool showError = true);
 void GoToPage      (int idx);
 void Navigate      (int delta);
 void LayoutControls(HWND hwnd);
 void ToggleFullscreen();
 void PaintCanvas   (HWND hwnd);
 void AdjustZoom    (float delta);
+void SaveSettings  ();
+void LoadSettings  ();
+
+// -------------------------------------------------------
+//  Settings (Last opened file, page, folder)
+// -------------------------------------------------------
+static std::string WideToUtf8(const std::wstring& wstr)
+{
+    if (wstr.empty()) return "";
+    int need = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, NULL, 0, NULL, NULL);
+    if (need <= 0) return "";
+    std::string str(need - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &str[0], need, NULL, NULL);
+    return str;
+}
+
+static std::wstring Utf8ToWide(const std::string& str)
+{
+    if (str.empty()) return L"";
+    int need = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, NULL, 0);
+    if (need <= 0) return L"";
+    std::wstring wstr(need - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], need);
+    return wstr;
+}
+
+static std::wstring GetSettingsPath()
+{
+    wchar_t appData[MAX_PATH] = {};
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appData)))
+    {
+        std::wstring dir = std::wstring(appData) + L"\\BongsViewer";
+        CreateDirectoryW(dir.c_str(), NULL);
+        return dir + L"\\settings.ini";
+    }
+    return L"settings.ini";
+}
+
+void SaveSettings()
+{
+    std::wstring iniPath = GetSettingsPath();
+    std::string content;
+    if (!g_app.lastFolder.empty())
+        content += "last_folder=" + WideToUtf8(g_app.lastFolder) + "\n";
+    if (!g_app.lastFile.empty())
+        content += "last_file=" + WideToUtf8(g_app.lastFile) + "\n";
+    content += "last_page=" + std::to_string(g_app.lastPage) + "\n";
+
+    FILE* f = NULL;
+    if (_wfopen_s(&f, iniPath.c_str(), L"wb") == 0 && f)
+    {
+        fwrite(content.data(), 1, content.size(), f);
+        fclose(f);
+    }
+}
+
+void LoadSettings()
+{
+    std::wstring iniPath = GetSettingsPath();
+    FILE* f = NULL;
+    if (_wfopen_s(&f, iniPath.c_str(), L"rb") == 0 && f)
+    {
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz > 0 && sz < 100000)
+        {
+            std::string buf(sz, '\0');
+            fread(&buf[0], 1, sz, f);
+            fclose(f);
+
+            size_t start = 0;
+            while (start < buf.size())
+            {
+                size_t end = buf.find('\n', start);
+                if (end == std::string::npos) end = buf.size();
+                std::string line = buf.substr(start, end - start);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+
+                size_t eq = line.find('=');
+                if (eq != std::string::npos)
+                {
+                    std::string key = line.substr(0, eq);
+                    std::string val = line.substr(eq + 1);
+                    if (key == "last_file")        g_app.lastFile = Utf8ToWide(val);
+                    else if (key == "last_folder") g_app.lastFolder = Utf8ToWide(val);
+                    else if (key == "last_page")   g_app.lastPage = std::max(0, std::atoi(val.c_str()));
+                }
+                start = end + 1;
+            }
+            return;
+        }
+        fclose(f);
+    }
+}
 
 // -------------------------------------------------------
 //  WinMain
@@ -215,13 +315,30 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int nCmdShow)
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
+    LoadSettings();
+
     // If launched with a file argument, open it
+    bool openedFromArg = false;
     if (lpCmdLine && lpCmdLine[0])
     {
         int argc = 0;
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        if (argc > 1) OpenZipFile(argv[1]);
+        if (argc > 1)
+        {
+            OpenZipFile(argv[1], 0, true);
+            openedFromArg = true;
+        }
         LocalFree(argv);
+    }
+
+    // Otherwise, resume last opened file and page if available
+    if (!openedFromArg && !g_app.lastFile.empty())
+    {
+        DWORD attr = GetFileAttributesW(g_app.lastFile.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY))
+        {
+            OpenZipFile(g_app.lastFile, g_app.lastPage, false);
+        }
     }
 
     MSG msg;
@@ -346,27 +463,38 @@ void OpenZipDialog()
     ofn.lpstrFilter = L"Comic Book (*.zip;*.cbz)\0*.zip;*.cbz\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile   = buf;
     ofn.nMaxFile    = MAX_PATH;
+    if (!g_app.lastFolder.empty())
+        ofn.lpstrInitialDir = g_app.lastFolder.c_str();
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle  = L"Open Comic Book ZIP";
     if (GetOpenFileNameW(&ofn))
-        OpenZipFile(buf);
+        OpenZipFile(buf, 0, true);
 }
 
 // -------------------------------------------------------
 //  Open ZIP file
 // -------------------------------------------------------
-void OpenZipFile(const std::wstring& path)
+void OpenZipFile(const std::wstring& path, int startPage, bool showError)
 {
     if (g_app.image) { delete g_app.image; g_app.image = NULL; }
     g_app.currentPage = -1;
 
     if (!g_app.book.Open(path))
     {
-        MessageBoxW(g_app.hwndMain,
-            L"Cannot open ZIP or no images found.",
-            L"Error", MB_OK | MB_ICONERROR);
+        if (showError)
+        {
+            MessageBoxW(g_app.hwndMain,
+                L"Cannot open ZIP or no images found.",
+                L"Error", MB_OK | MB_ICONERROR);
+        }
         return;
     }
+
+    wchar_t dirBuf[MAX_PATH] = {};
+    wcsncpy_s(dirBuf, path.c_str(), _TRUNCATE);
+    PathRemoveFileSpecW(dirBuf);
+    g_app.lastFolder = dirBuf;
+    g_app.lastFile   = path;
 
     int total = (int)g_app.book.pages.size();
 
@@ -381,7 +509,11 @@ void OpenZipFile(const std::wstring& path)
     swprintf_s(title, L"%s - %s", APP_NAME, PathFindFileNameW(path.c_str()));
     SetWindowTextW(g_app.hwndMain, title);
 
-    GoToPage(0);
+    if (startPage < 0) startPage = 0;
+    if (startPage >= total) startPage = total - 1;
+
+    GoToPage(startPage);
+    SaveSettings();
 }
 
 // -------------------------------------------------------
@@ -396,7 +528,9 @@ void GoToPage(int idx)
     if (idx == g_app.currentPage) return;
 
     g_app.currentPage = idx;
+    g_app.lastPage    = idx;
     g_app.zoomFactor  = 1.0f;  // reset zoom on page change
+    SaveSettings();
 
     if (g_app.image) { delete g_app.image; g_app.image = NULL; }
 
@@ -721,6 +855,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_DESTROY:
+        SaveSettings();
         if (g_app.image) { delete g_app.image; g_app.image = NULL; }
         g_app.book.Close();
         PostQuitMessage(0);

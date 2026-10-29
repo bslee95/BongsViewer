@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-set VSBASE=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build
-set VCVARS=%VSBASE%\vcvars64.bat
+set "VSBASE=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build"
+set "VCVARS=%VSBASE%\vcvars64.bat"
 
 if not exist "%VCVARS%" (
     echo Visual Studio vcvars64.bat not found at:
@@ -17,6 +17,11 @@ call "%VCVARS%" >nul 2>&1
 echo BongsViewer 빌드 중...
 
 rc.exe /nologo BongsViewer.rc
+if %ERRORLEVEL% neq 0 (
+    echo 리소스 컴파일 실패
+    pause
+    exit /b 1
+)
 
 cl.exe /nologo /EHsc /O2 /W3 /MT ^
     /DUNICODE /D_UNICODE ^
