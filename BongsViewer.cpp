@@ -152,6 +152,8 @@ struct AppState {
     RECT prevWindowRect   = {};
     DWORD prevStyle       = 0;
     bool trackbarUpdating = false;
+
+    float zoomFactor = 1.0f;  // 1.0 = fit-to-window, >1 = zoomed in, <1 = zoomed out
 };
 
 static AppState g_app;
@@ -168,6 +170,7 @@ void Navigate      (int delta);
 void LayoutControls(HWND hwnd);
 void ToggleFullscreen();
 void PaintCanvas   (HWND hwnd);
+void AdjustZoom    (float delta);
 
 // -------------------------------------------------------
 //  WinMain
@@ -236,7 +239,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int nCmdShow)
                 vk == VK_SPACE || vk == VK_BACK  ||
                 vk == VK_F11   || vk == VK_ESCAPE||
                 vk == VK_RETURN||
-                vk == 'F'      || vk == 'O')
+                vk == 'F'      || vk == 'O'      ||
+                vk == VK_OEM_PLUS || vk == VK_OEM_MINUS ||
+                vk == VK_ADD      || vk == VK_SUBTRACT)
             {
                 SendMessage(g_app.hwndMain, WM_KEYDOWN, msg.wParam, msg.lParam);
                 continue;   // skip dispatching to the focused child control
@@ -391,6 +396,7 @@ void GoToPage(int idx)
     if (idx == g_app.currentPage) return;
 
     g_app.currentPage = idx;
+    g_app.zoomFactor  = 1.0f;  // reset zoom on page change
 
     if (g_app.image) { delete g_app.image; g_app.image = NULL; }
 
@@ -440,6 +446,18 @@ void GoToPage(int idx)
 void Navigate(int delta)
 {
     GoToPage(g_app.currentPage + delta);
+}
+
+// -------------------------------------------------------
+//  Zoom control  (+5% / -5%, centered on canvas)
+// -------------------------------------------------------
+void AdjustZoom(float delta)
+{
+    if (!g_app.image) return;
+    g_app.zoomFactor += delta;
+    if (g_app.zoomFactor < 0.05f) g_app.zoomFactor = 0.05f;  // minimum 5%
+    if (g_app.zoomFactor > 10.0f) g_app.zoomFactor = 10.0f;  // maximum 1000%
+    InvalidateRect(g_app.hwndCanvas, NULL, TRUE);
 }
 
 // -------------------------------------------------------
@@ -529,6 +547,7 @@ void PaintCanvas(HWND hwnd)
         float scaleX = (float)W / (float)imgW;
         float scaleY = (float)H / (float)imgH;
         float scale  = scaleX < scaleY ? scaleX : scaleY;
+        scale *= g_app.zoomFactor;
 
         int drawW = (int)(imgW * scale);
         int drawH = (int)(imgH * scale);
@@ -551,7 +570,8 @@ void PaintCanvas(HWND hwnd)
             L"Drag & drop a ZIP/CBZ file here, or click [ Open ]\n\n"
             L"Keys:  Left/Up = prev,  Right/Down = next,  PageUp/PageDown  Home/End\n"
             L"Mouse: Click left-half = prev,  right-half = next,  Wheel = scroll\n"
-            L"F / F11 = fullscreen    Escape = exit fullscreen";
+            L"F / F11 = fullscreen    Escape = exit fullscreen\n"
+            L"+/- = zoom in/out (5% steps)";
         gfx.DrawString(hint, -1, &font, rctf, &sf, &br);
     }
 
@@ -659,6 +679,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case 'O':
             if (GetKeyState(VK_CONTROL) & 0x8000) OpenZipDialog();
             break;
+        // Zoom: +/= or numpad+ to zoom in, -/numpad- to zoom out
+        case VK_OEM_PLUS: case VK_ADD:      AdjustZoom(+0.05f); break;
+        case VK_OEM_MINUS: case VK_SUBTRACT: AdjustZoom(-0.05f); break;
         }
         return 0;
 
