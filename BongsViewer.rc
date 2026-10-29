@@ -1,0 +1,5 @@
+// BongsViewer.rc -- Win32 Resource File
+#include <windows.h>
+
+// App icon (IDI_APP = 101)
+101 ICON "icon.ico"

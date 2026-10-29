@@ -16,11 +16,13 @@ call "%VCVARS%" >nul 2>&1
 
 echo BongsViewer 빌드 중...
 
+rc.exe /nologo BongsViewer.rc
+
 cl.exe /nologo /EHsc /O2 /W3 /MT ^
     /DUNICODE /D_UNICODE ^
     /DWINVER=0x0601 /D_WIN32_WINNT=0x0601 ^
     /Fe:BongsViewer.exe ^
-    BongsViewer.cpp miniz.c ^
+    BongsViewer.cpp miniz.c BongsViewer.res ^
     /link /SUBSYSTEM:WINDOWS ^
     gdiplus.lib comctl32.lib comdlg32.lib shell32.lib shlwapi.lib ^
     user32.lib gdi32.lib ole32.lib kernel32.lib
