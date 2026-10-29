@@ -2,4 +2,4 @@
 #include <windows.h>
 
 // App icon (IDI_APP = 101)
-101 ICON "icon.ico"
+101 ICON "res/BongsViewer.ico"
