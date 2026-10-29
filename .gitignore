@@ -1,0 +1,12 @@
+# Build output
+*.obj
+*.ilk
+*.pdb
+*.exp
+*.lib
+BongsViewer.exe
+
+# VS IDE
+.vs/
+*.user
+*.VC.db
